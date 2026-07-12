@@ -1,0 +1,12 @@
+version: "3.9"
+services:
+  proxy:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      UPSTREAM_ENDPOINT: "https://your-alist.example.com"
+      LISTEN_ADDR: ":8080"
+      CACHE_DIR: "/data/cache"
+    volumes:
+      - ./data:/data
