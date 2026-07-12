@@ -13,6 +13,10 @@ var clock = func() int64 { return time.Now().Unix() }
 func SetClock(f func() int64) { clock = f }
 func ResetClock()             { clock = func() int64 { return time.Now().Unix() } }
 
+// Now 返回当前存储时钟（与 SetClock 注入的时钟同源），供其他包（assessor）
+// 复用同一可测试时钟，避免双时钟导致画像过期判定不一致。
+func Now() int64 { return clock() }
+
 type Store struct {
 	db *sql.DB
 }
