@@ -64,6 +64,9 @@ func (a *Assessor) unknown(ss source.SubSource) Profile {
 }
 
 func (a *Assessor) expired(updatedAt int64) bool {
+	if a.cfg.ProfileMaxAgeSec <= 0 {
+		return false // 未配置上限：画像不过期
+	}
 	return nowSec()-updatedAt > a.cfg.ProfileMaxAgeSec
 }
 

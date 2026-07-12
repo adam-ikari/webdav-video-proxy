@@ -130,12 +130,15 @@ func (c *Client) PropFind(endpoint, path string, depth int) ([]Entry, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusMultiStatus {
-		return nil, fmt.Errorf("upstream PROPFIND status %d", resp.StatusCode)
-	}
+	// 上游应回 207 Multi-Status；部分实现回 200 + 合法 multistatus 正文，
+	// 透明降级：先按正文解析，解析成功即接受，避免对非 207 上游断流。
 	var ms multistatus
-	if err := xml.NewDecoder(resp.Body).Decode(&ms); err != nil {
-		return nil, err
+	decErr := xml.NewDecoder(resp.Body).Decode(&ms)
+	if resp.StatusCode != http.StatusMultiStatus && decErr != nil {
+		return nil, fmt.Errorf("upstream PROPFIND status %d: %w", resp.StatusCode, decErr)
+	}
+	if decErr != nil {
+		return nil, decErr
 	}
 	out := make([]Entry, 0, len(ms.Responses))
 	for _, r := range ms.Responses {
