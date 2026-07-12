@@ -20,7 +20,7 @@ func newAssessor(t *testing.T) (*Assessor, *store.Store) {
 	cfg := config.Config{
 		SlowSourceThresholdMbps: 2.0,
 		DefaultMaxConcurrency:   4,
-		ProbeMinIntervalSec:    3600,
+		ProbeMinIntervalSec:     3600,
 		ProfileMaxSamples:       20,
 		ProfileMaxAgeSec:        6 * 3600,
 	}
