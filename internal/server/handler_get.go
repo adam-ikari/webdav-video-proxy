@@ -74,10 +74,19 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("Content-Range", "bytes "+strconv.FormatInt(start, 10)+"-"+strconv.FormatInt(end, 10)+"/"+strconv.FormatInt(size, 10))
 	w.Header().Set("Accept-Ranges", "bytes")
-	w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
-	w.WriteHeader(http.StatusPartialContent)
+	if r.Header.Get("Range") != "" && size > 0 {
+		w.Header().Set("Content-Range", "bytes "+strconv.FormatInt(start, 10)+"-"+strconv.FormatInt(end, 10)+"/"+strconv.FormatInt(size, 10))
+		w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
+		w.WriteHeader(http.StatusPartialContent)
+	} else if size <= 0 {
+		// Size unknown (HEAD failed) and no usable Range: return 200 with empty body.
+		w.WriteHeader(http.StatusOK)
+		return
+	} else {
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+		w.WriteHeader(http.StatusOK)
+	}
 
 	if allHit {
 		flushCached(w, s.cache, ck, start, end, bs)

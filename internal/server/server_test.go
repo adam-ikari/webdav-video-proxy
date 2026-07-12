@@ -80,6 +80,50 @@ func TestGetStreamsAndCaches(t *testing.T) {
 	}
 }
 
+// TestGetFullFileReturns200 sends a plain GET (no Range header) and asserts
+// RFC 7233 compliance: 200 OK, no Content-Range, full body.
+func TestGetFullFileReturns200(t *testing.T) {
+	payload := []byte("0123456789abcdef")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"v1"`)
+		w.Header().Set("Content-Length", "16")
+		if rng := r.Header.Get("Range"); rng != "" {
+			var s, e int
+			fmt.Sscanf(rng, "bytes=%d-%d", &s, &e)
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/16", s, e))
+			w.WriteHeader(http.StatusPartialContent)
+			w.Write(payload[s : e+1])
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write(payload)
+	}))
+	defer upstream.Close()
+
+	srv := newTestServer(t, upstream.URL)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	req, _ := http.NewRequest("GET", ts.URL+"/src/f.bin", nil)
+	// Explicitly no Range header.
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if cr := resp.Header.Get("Content-Range"); cr != "" {
+		t.Errorf("Content-Range = %q, want empty for plain GET", cr)
+	}
+	if string(got) != string(payload) {
+		t.Errorf("body = %q, want %q", got, payload)
+	}
+}
+
 func TestPropFindMarksSlowFolder(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		xml := `<?xml version="1.0"?><D:multistatus xmlns:D="DAV:">
