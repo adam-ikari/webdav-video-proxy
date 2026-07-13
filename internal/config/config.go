@@ -22,6 +22,7 @@ type Config struct {
 	ListenAddr              string
 	VideoExts               string // 逗号分隔
 	HeadRevalidateSec       int64  // HEAD 一致性校验间隔：同一文件 N 秒内不重复 HEAD
+	MetaCacheMaxEntries     int    // metaMap/dirMap 各自的条目上限，超出按最旧淘汰
 }
 
 func getenv(key, def string) string {
@@ -68,5 +69,6 @@ func Load() Config {
 		ListenAddr:              getenv("LISTEN_ADDR", ":8080"),
 		VideoExts:               getenv("VIDEO_EXTS", ".mkv,.mp4,.ts,.avi,.mov,.flv,.m4v"),
 		HeadRevalidateSec:       getenvInt("HEAD_REVALIDATE_SEC", 60),
+		MetaCacheMaxEntries:     int(getenvInt("META_CACHE_MAX_ENTRIES", 4096)),
 	}
 }

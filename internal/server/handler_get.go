@@ -115,7 +115,7 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		ratio := float64(end) / float64(size)
 		if ratio >= 0.7 {
 			// 到 70%：预取下一集首段（I4）。后台进行，不阻塞当前响应（当前响应已近完成）。
-			go s.prefetchNextEpisode(ss, rest, version)
+			go s.prefetchNextEpisode(ss, rest)
 		}
 	}
 }

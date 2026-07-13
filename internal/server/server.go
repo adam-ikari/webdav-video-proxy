@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 
@@ -49,6 +50,9 @@ type Server struct {
 
 	dirMu  sync.Mutex
 	dirMap map[string]dirEntry // key = subkey + "|" + dirpath
+
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // New 装配全部单元。endpoint 为上游 WebDAV 根 URL。
@@ -85,7 +89,12 @@ func New(cfg config.Config, endpoint string) (*Server, error) {
 	}, nil
 }
 
-func (s *Server) Close() error { return s.st.Close() }
+func (s *Server) Close() error {
+	if s.cancel != nil {
+		s.cancel()
+	}
+	return s.st.Close()
+}
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -95,7 +104,9 @@ func (s *Server) Handler() http.Handler {
 
 // StartBackground 启缓存淘汰 worker。
 func (s *Server) StartBackground(ctx context.Context) {
-	s.cache.StartEvictor(ctx)
+	// 用传入 ctx 派生一个可被 Close 取消的 ctx，供后台预取 goroutine 感知停机（I4-A）。
+	s.ctx, s.cancel = context.WithCancel(ctx)
+	s.cache.StartEvictor(s.ctx)
 }
 
 // resolveVersion 低频 HEAD 校验（I6）：同一文件在 HeadRevalidateSec 内复用上次 version/size，
@@ -127,15 +138,20 @@ func (s *Server) resolveVersion(ss source.SubSource, rest string) (version strin
 	}
 	s.metaMu.Lock()
 	s.metaMap[key] = fileMeta{version: v, size: sz, checkedAt: now}
+	s.pruneMeta()
 	s.metaMu.Unlock()
 	return v, sz
 }
 
 // prefetchNextEpisode 在当前文件播放到 70% 时预取下一集首段（I4）。
 // 列出当前文件所在目录（结果缓存 HeadRevalidateSec），按文件名自然排序算下一集，
-// 交 preloader.NextPrefetch 预取。version 复用当前文件版本（下一集同目录同源，近似）。
-func (s *Server) prefetchNextEpisode(ss source.SubSource, currentFile, version string) {
+// 交 preloader.NextPrefetch 预取。下一集用其自己的 version（见 tryPrefetch，I4-B）。
+func (s *Server) prefetchNextEpisode(ss source.SubSource, currentFile string) {
 	if s.pre == nil || currentFile == "" {
+		return
+	}
+	// 停机感知：Close 会取消 s.ctx，预取 goroutine 不再打上游（I4-A）。
+	if s.ctx != nil && s.ctx.Err() != nil {
 		return
 	}
 	dir := pathDir(currentFile)
@@ -145,7 +161,7 @@ func (s *Server) prefetchNextEpisode(ss source.SubSource, currentFile, version s
 	de, ok := s.dirMap[key]
 	if ok && now-de.listedAt < s.cfg.HeadRevalidateSec && len(de.files) > 0 {
 		s.dirMu.Unlock()
-		s.tryPrefetch(ss, de.files, currentFile, version)
+		s.tryPrefetch(ss, de.files, currentFile)
 		return
 	}
 	s.dirMu.Unlock()
@@ -163,18 +179,73 @@ func (s *Server) prefetchNextEpisode(ss source.SubSource, currentFile, version s
 	}
 	s.dirMu.Lock()
 	s.dirMap[key] = dirEntry{files: files, listedAt: now}
+	s.pruneDir()
 	s.dirMu.Unlock()
-	s.tryPrefetch(ss, files, currentFile, version)
+	s.tryPrefetch(ss, files, currentFile)
 }
 
-// tryPrefetch 计算下一集并触发预取。
-func (s *Server) tryPrefetch(ss source.SubSource, files []string, currentFile, version string) {
+// tryPrefetch 计算下一集并触发预取。下一集用其自己的 version（HEAD 解析），
+// 绝不用当前文件的 version——否则缓存键不匹配（预取作废）且两文件 version 恰都为
+// "unknown" 时会跨文件串字节（I4-B 修正）。
+func (s *Server) tryPrefetch(ss source.SubSource, files []string, currentFile string) {
 	next := preloader.NextEpisode(files, pathBase(currentFile))
 	if next == "" {
 		return
 	}
 	dir := pathDir(currentFile)
-	s.pre.NextPrefetch(ss, dir+"/"+next, version)
+	nextPath := dir + "/" + next
+	// 解析下一集自己的 version（同样走低频 HEAD 缓存，不额外打上游）。
+	nextVersion, _ := s.resolveVersion(ss, nextPath)
+	s.pre.NextPrefetch(ss, nextPath, nextVersion)
+}
+
+// pruneMeta 在 metaMap 超过上限时淘汰最旧的一批（I4-A：防止长期运行 OOM）。
+func (s *Server) pruneMeta() {
+	cap := s.cfg.MetaCacheMaxEntries
+	if cap <= 0 || len(s.metaMap) <= cap {
+		return
+	}
+	type kv struct {
+		k  string
+		ts int64
+	}
+	ents := make([]kv, 0, len(s.metaMap))
+	for k, m := range s.metaMap {
+		ents = append(ents, kv{k, m.checkedAt})
+	}
+	sort.Slice(ents, func(i, j int) bool { return ents[i].ts < ents[j].ts })
+	// 淘汰最旧的 25%，腾出空间
+	drop := len(ents) - cap + cap/4
+	if drop < 1 {
+		drop = 1
+	}
+	for i := 0; i < drop && i < len(ents); i++ {
+		delete(s.metaMap, ents[i].k)
+	}
+}
+
+// pruneDir 同理对 dirMap。
+func (s *Server) pruneDir() {
+	cap := s.cfg.MetaCacheMaxEntries
+	if cap <= 0 || len(s.dirMap) <= cap {
+		return
+	}
+	type kv struct {
+		k  string
+		ts int64
+	}
+	ents := make([]kv, 0, len(s.dirMap))
+	for k, d := range s.dirMap {
+		ents = append(ents, kv{k, d.listedAt})
+	}
+	sort.Slice(ents, func(i, j int) bool { return ents[i].ts < ents[j].ts })
+	drop := len(ents) - cap + cap/4
+	if drop < 1 {
+		drop = 1
+	}
+	for i := 0; i < drop && i < len(ents); i++ {
+		delete(s.dirMap, ents[i].k)
+	}
 }
 
 // pathDir 返回文件的目录部分（含前导斜杠）。
