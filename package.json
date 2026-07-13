@@ -1,0 +1,15 @@
+{
+  "name": "webdav-video-proxy-site",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "VitePress 文档站（项目本身是 Go，此 package.json 仅为站点构建用）",
+  "scripts": {
+    "dev": "vitepress dev web",
+    "build": "vitepress build web",
+    "preview": "vitepress preview web"
+  },
+  "devDependencies": {
+    "vitepress": "^1.6.3"
+  }
+}

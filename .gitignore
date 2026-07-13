@@ -4,3 +4,8 @@
 /proxy
 /webdav-proxy
 *.exe
+
+# vitepress / node
+node_modules/
+web/.vitepress/dist/
+web/.vitepress/cache/
