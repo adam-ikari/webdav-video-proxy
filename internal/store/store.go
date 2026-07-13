@@ -189,7 +189,10 @@ func (s *Store) HasBlock(bk BlockKey) (bool, error) {
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
-	return err == nil, err
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *Store) DeleteBlock(bk BlockKey) error {
@@ -203,6 +206,26 @@ func (s *Store) ListLRUBlocks(limit int) ([]LRUBlock, error) {
 	rows, err := s.db.Query(
 		`SELECT sub_key, file_path, version, block_idx, size, last_used FROM blocks ORDER BY last_used ASC LIMIT ?`,
 		limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []LRUBlock
+	for rows.Next() {
+		var b LRUBlock
+		if err := rows.Scan(&b.SubKey, &b.FilePath, &b.Version, &b.BlockIdx, &b.Size, &b.LastUsed); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// ListExpiredBlocks 返回 last_used 早于 cutoff 的块（TTL 过期），用于按时间淘汰。
+func (s *Store) ListExpiredBlocks(cutoff int64, limit int) ([]LRUBlock, error) {
+	rows, err := s.db.Query(
+		`SELECT sub_key, file_path, version, block_idx, size, last_used FROM blocks WHERE last_used < ? ORDER BY last_used ASC LIMIT ?`,
+		cutoff, limit)
 	if err != nil {
 		return nil, err
 	}

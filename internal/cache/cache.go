@@ -62,10 +62,12 @@ func (c *Cache) Has(key CacheKey, blockIdx int64) (bool, error) {
 	return c.st.HasBlock(blockKeyOf(key, blockIdx))
 }
 
-// Put 写一块。块大小不对齐则截到块大小。写前检查硬上限，超限且淘汰未跟上则跳过（透明降级）。
+// Put 写一块。块大小不对齐则截到块大小。硬上限×1.5 之外停写（淘汰跟不上时的透明降级），
+// 给 evictor 1.5× slack：正常写直到 max，max..1.5×max 期间 evictor 异步削，
+// 超 1.5×max 说明淘汰跟不上则跳过这块不缓存。
 func (c *Cache) Put(key CacheKey, blockIdx int64, data []byte) error {
-	if c.TotalSize() >= c.cfg.CacheMaxSize && c.TotalSize() >= c.cfg.CacheMaxSize*3/2 {
-		return nil // 硬上限且淘汰跟不上：跳过缓存写入
+	if c.TotalSize() >= c.cfg.CacheMaxSize*3/2 {
+		return nil // 淘汰跟不上：跳过缓存写入，绝不阻塞主路径
 	}
 	bs := int(c.cfg.CacheBlockSize)
 	if len(data) > bs {
@@ -107,10 +109,4 @@ func (c *Cache) TotalSize() int64 {
 
 func (c *Cache) InvalidateFile(key CacheKey) error {
 	return c.st.InvalidateFile(key.SS.Key(), key.FilePath)
-}
-
-func (c *Cache) isPinned(refKey string) bool {
-	c.refsMu.Lock()
-	defer c.refsMu.Unlock()
-	return c.refs[refKey] > 0
 }

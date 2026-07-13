@@ -2,6 +2,7 @@ package webdav
 
 import (
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,6 +10,10 @@ import (
 	"strings"
 	"time"
 )
+
+// ErrRangeNotSupported 表示上游忽略了 Range 请求，回 200 整文件而非 206 分片。
+// 调用方（fetcher）应据此降级为单连接整文件流。
+var ErrRangeNotSupported = errors.New("upstream does not support Range requests")
 
 type Entry struct {
 	Href        string
@@ -23,7 +28,7 @@ type Client struct {
 }
 
 func NewClient() *Client {
-	return &Client{HTTP: &http.Client{Timeout: 60 * time.Second}}
+	return &Client{HTTP: &http.Client{Timeout: 120 * time.Second}}
 }
 
 func (c *Client) do(req *http.Request) (*http.Response, error) {
@@ -35,6 +40,8 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 }
 
 // GetRange 拉取 [start,end]（含）字节。返回 body、文件总长 total。
+// 若上游回 200（忽略 Range，返回整文件），返回 ErrRangeNotSupported，
+// 调用方可据此降级为单连接整文件路径。
 func (c *Client) GetRange(endpoint, path string, start, end int64) (io.ReadCloser, int64, error) {
 	req, err := http.NewRequest("GET", endpoint+path, nil)
 	if err != nil {
@@ -45,7 +52,13 @@ func (c *Client) GetRange(endpoint, path string, start, end int64) (io.ReadClose
 	if err != nil {
 		return nil, 0, err
 	}
-	if resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusOK {
+	if resp.StatusCode == http.StatusOK {
+		// 上游忽略 Range，回整文件。若调用方本就要整文件（start==0 且 end>=total-1）则可直接用，
+		// 否则报错让 fetcher 降级。这里统一报错，由 fetcher 决策。
+		resp.Body.Close()
+		return nil, 0, ErrRangeNotSupported
+	}
+	if resp.StatusCode != http.StatusPartialContent {
 		resp.Body.Close()
 		return nil, 0, fmt.Errorf("upstream status %d", resp.StatusCode)
 	}

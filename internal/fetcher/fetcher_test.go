@@ -81,3 +81,68 @@ func TestPlanThrottledIsN1(t *testing.T) {
 		t.Errorf("throttled N = %d, want 1", plan.N)
 	}
 }
+
+// TestFetchWholeFileFallback：上游忽略 Range 回 200 整文件，fetcher 降级单连接整文件流，
+// 仍按 [start,end] 顺序吐出正确内容。
+func TestFetchWholeFileFallback(t *testing.T) {
+	payload := []byte("0123456789abcdef")
+	// 上游不认 Range，永远回 200 整文件
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(payload)))
+		w.WriteHeader(http.StatusOK)
+		w.Write(payload)
+	}))
+	defer srv.Close()
+	ss := source.SubSource{Endpoint: srv.URL, TopSegment: "src"}
+	prof := assessor.Profile{SubSource: ss, Friendly: assessor.Friendly, SuggestedN: 4, BandwidthMbps: 100}
+
+	st, _ := store.Open(t.TempDir() + "/f.db")
+	defer st.Close()
+	cfg := config.Config{CacheBlockSize: 4, CacheMaxSize: 1 << 20}
+	c := cache.New(st, cfg, nil)
+	asm := assessor.New(st, cfg, nil)
+	p := NewPlanner(cfg)
+	f := New(c, asm, nil)
+
+	plan := p.Plan(ss, "/f.bin", "v", 0, int64(len(payload))-1, prof)
+	plan.N = 4
+	rc, err := f.Fetch(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	defer rc.Close()
+	got, _ := io.ReadAll(rc)
+	if string(got) != string(payload) {
+		t.Errorf("whole-file fallback output = %q, want %q", got, payload)
+	}
+}
+
+// TestFetchOrderedOutputUnaligned：Range 起点非块对齐时仍正确吐出。
+func TestFetchOrderedOutputUnaligned(t *testing.T) {
+	payload := []byte("0123456789abcdef")
+	srv := newUpstream(t, int64(len(payload)), payload)
+	ss := source.SubSource{Endpoint: srv.URL, TopSegment: "src"}
+	prof := assessor.Profile{SubSource: ss, Friendly: assessor.Friendly, SuggestedN: 4, BandwidthMbps: 100}
+
+	st, _ := store.Open(t.TempDir() + "/f.db")
+	defer st.Close()
+	cfg := config.Config{CacheBlockSize: 4, CacheMaxSize: 1 << 20}
+	c := cache.New(st, cfg, nil)
+	asm := assessor.New(st, cfg, nil)
+	p := NewPlanner(cfg)
+	f := New(c, asm, nil)
+
+	// 请求 bytes=2-13（非块对齐起止）
+	plan := p.Plan(ss, "/f.bin", "v", 2, 13, prof)
+	plan.N = 4
+	rc, err := f.Fetch(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	defer rc.Close()
+	got, _ := io.ReadAll(rc)
+	want := payload[2:14]
+	if string(got) != string(want) {
+		t.Errorf("unaligned output = %q, want %q", got, want)
+	}
+}

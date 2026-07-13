@@ -1,1 +1,6 @@
 .superpowers/
+
+# build artifacts
+/proxy
+/webdav-proxy
+*.exe

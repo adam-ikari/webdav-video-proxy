@@ -148,6 +148,11 @@ func (p *Preloader) endTask(key string) {
 
 // nextEpisode 按文件名自然排序返回 current 的下一个视频文件；无则空串。
 func nextEpisode(files []string, current string) string {
+	return NextEpisode(files, current)
+}
+
+// NextEpisode 按文件名自然排序返回 current 的下一个文件；无则空串。导出版本供 server 调用。
+func NextEpisode(files []string, current string) string {
 	sorted := append([]string{}, files...)
 	sort.SliceStable(sorted, func(i, j int) bool {
 		return natLess(sorted[i], sorted[j])

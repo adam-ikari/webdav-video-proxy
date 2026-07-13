@@ -3,6 +3,7 @@ package fetcher
 import (
 	"io"
 	"sync"
+	"time"
 )
 
 // orderedReader 把乱序到达的块按字节偏移顺序吐出。
@@ -15,6 +16,7 @@ type orderedReader struct {
 	blkSize int64
 	closed  bool
 	err     error
+	waitFor time.Duration // 单块等待上限，超时则 fail（防 worker 静默丢失导致永久阻塞）
 }
 
 func newOrderedReader(start, end, blockSize int64) *orderedReader {
@@ -23,6 +25,7 @@ func newOrderedReader(start, end, blockSize int64) *orderedReader {
 		endOff:  end,
 		blocks:  map[int64][]byte{},
 		blkSize: blockSize,
+		waitFor: 30 * time.Second,
 	}
 	r.cond = sync.NewCond(&r.mu)
 	return r
@@ -50,6 +53,30 @@ func (r *orderedReader) blockKeyFor(off int64) int64 {
 	return off - (off % r.blkSize)
 }
 
+// waitForBlock 等待下一块到达，带超时。返回是否继续（true=已通知重试，false=超时需 fail）。
+// 基于 cond 的超时等待：Go 的 sync.Cond 无原生超时，用后台定时器广播唤醒。
+func (r *orderedReader) waitForBlock() bool {
+	if r.waitFor <= 0 {
+		r.cond.Wait()
+		return true
+	}
+	done := make(chan struct{})
+	timer := time.AfterFunc(r.waitFor, func() {
+		r.mu.Lock()
+		r.cond.Broadcast()
+		r.mu.Unlock()
+		close(done)
+	})
+	defer timer.Stop()
+	r.cond.Wait()
+	select {
+	case <-done:
+		return false // 超时
+	default:
+		return true
+	}
+}
+
 func (r *orderedReader) Read(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -66,7 +93,13 @@ func (r *orderedReader) Read(p []byte) (int, error) {
 				}
 				return 0, io.ErrUnexpectedEOF
 			}
-			r.cond.Wait()
+			if !r.waitForBlock() {
+				// 超时：该块迟迟未到，判定为 worker 丢失，降级报错让上层重试。
+				if r.err == nil {
+					r.err = io.ErrUnexpectedEOF
+				}
+				return 0, r.err
+			}
 			continue
 		}
 		// 块内偏移：nextOff 相对块起点的字节位置（首块可能 >0）。

@@ -21,16 +21,30 @@ func New(exts []string) *Marker {
 	return m
 }
 
-func IsVideoFile(name string) bool {
-	ext := strings.ToLower(path.Ext(name))
-	return markerSingleton.videoExts[ext]
-}
-
-// 包级单例供 IsVideoFile 用（由 server 启动时初始化）。
-var markerSingleton = New(defaultExts())
+// globalExts 是包级扩展名集合，供 IsVideoFile 用。默认硬编码；
+// server 启动时应调 ConfigureGlobal 用配置的 VIDEO_EXTS 覆盖（M5）。
+var globalExts = buildExtSet(defaultExts())
 
 var defaultExts = func() []string {
 	return []string{".mkv", ".mp4", ".ts", ".avi", ".mov", ".flv", ".m4v"}
+}
+
+func buildExtSet(exts []string) map[string]bool {
+	set := map[string]bool{}
+	for _, e := range exts {
+		set[strings.ToLower(e)] = true
+	}
+	return set
+}
+
+// ConfigureGlobal 用配置的扩展名集合覆盖包级 IsVideoFile 使用的集合。
+func ConfigureGlobal(exts []string) {
+	globalExts = buildExtSet(exts)
+}
+
+func IsVideoFile(name string) bool {
+	ext := strings.ToLower(path.Ext(name))
+	return globalExts[ext]
 }
 
 // IsVideoFolder 判断该目录的条目列表里是否直接含视频文件。

@@ -8,5 +8,14 @@ services:
       UPSTREAM_ENDPOINT: "https://your-alist.example.com"
       LISTEN_ADDR: ":8080"
       CACHE_DIR: "/data/cache"
+      # 可选调参（均有默认值）：
+      # CACHE_MAX_SIZE: "53687091200"   # 50GB
+      # CACHE_BLOCK_SIZE: "4194304"     # 4MB
+      # CACHE_TTL: "604800"             # 7天
+      # DEFAULT_MAX_CONCURRENCY: "4"
+      # HEAD_REVALIDATE_SEC: "60"
+      # SLOW_SOURCE_THRESHOLD_MBPS: "2.0"
+      # VIDEO_EXTS: ".mkv,.mp4,.ts,.avi,.mov,.flv,.m4v"
     volumes:
       - ./data:/data
+    restart: unless-stopped
