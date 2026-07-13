@@ -56,9 +56,10 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	ck := cache.CacheKey{SS: ss, FilePath: rest, Version: version}
 	bs := s.cfg.CacheBlockSize
 	blkStart := (start / bs) * bs
-	blkEnd := ((end + bs - 1) / bs) * bs
+	// blkEnd 取覆盖 end 的块起点（下取整），而非向上取整到下一块——避免检查请求区间之外的块。
+	blkEnd := (end / bs) * bs
 	if size > 0 && blkEnd >= size {
-		blkEnd = size - 1
+		blkEnd = ((size - 1) / bs) * bs
 	}
 	cachedBlocks := map[int64][]byte{}
 	allHit := true
