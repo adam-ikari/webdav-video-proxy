@@ -30,16 +30,9 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	ss := source.ParseSubSource(s.endpoint, realPath)
 	rest := ss.RestPath(realPath)
 
-	// 一致性校验：HEAD 拿 ETag/Size
-	etag, _, size, err := s.cli.Head(s.endpoint, rest)
-	if err != nil {
-		// 降级：ETag 未知，继续单路取流
-		etag = ""
-	}
-	version := etag
-	if version == "" {
-		version = "unknown"
-	}
+	// 一致性校验（低频 HEAD，I6）：HeadRevalidateSec 内复用上次 version/size，
+	// 不每次请求都打上游 HEAD。version 未知时降级为 "unknown" 继续单路取流。
+	version, size := s.resolveVersion(ss, rest)
 
 	// 解析 Range（如 "bytes=0-1023" 或 "bytes=0-"）
 	start, end := int64(0), size-1
@@ -58,7 +51,8 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		end = size - 1
 	}
 
-	// 缓存全命中检查（按块）
+	// 缓存全命中检查（按块，直接用 Get 而非 Has+Get 两段式，避免 Has 与 Get 之间
+	// 块被淘汰器移除导致的静默截断）。任一块缺失则 allHit=false，走 Fetch 回填。
 	ck := cache.CacheKey{SS: ss, FilePath: rest, Version: version}
 	bs := s.cfg.CacheBlockSize
 	blkStart := (start / bs) * bs
@@ -66,12 +60,15 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	if size > 0 && blkEnd >= size {
 		blkEnd = size - 1
 	}
+	cachedBlocks := map[int64][]byte{}
 	allHit := true
 	for off := blkStart; off <= blkEnd && allHit; off += bs {
-		ok, _ := s.cache.Has(ck, off/bs)
-		if !ok {
+		data, ok, _ := s.cache.Get(ck, off/bs)
+		if !ok || data == nil {
 			allHit = false
+			break
 		}
+		cachedBlocks[off] = data
 	}
 
 	w.Header().Set("Accept-Ranges", "bytes")
@@ -89,7 +86,16 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if allHit {
-		flushCached(w, s.cache, ck, start, end, bs)
+		// 全命中：Acquire 所有相关块引用，防止淘汰器在吐出期间移除（I3），
+		// 再用已取到的 cachedBlocks 吐出（无需二次 Get，杜绝 Has/Get 间的 TOCTOU）。
+		var releases []cache.ReleaseFunc
+		for off := range cachedBlocks {
+			releases = append(releases, s.cache.Acquire(ck, off/bs))
+		}
+		flushCachedBlocks(w, cachedBlocks, start, end, bs)
+		for _, rel := range releases {
+			rel()
+		}
 		s.pre.OnRead(ss, rest, version, end, size) // 顺序预读触发
 		return
 	}
@@ -106,15 +112,18 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	s.pre.OnRead(ss, rest, version, end, size)
 	if size > 0 {
 		ratio := float64(end) / float64(size)
-		s.pre.OnProgress(ss, "", rest, ratio)
+		if ratio >= 0.7 {
+			// 到 70%：预取下一集首段（I4）。后台进行，不阻塞当前响应（当前响应已近完成）。
+			go s.prefetchNextEpisode(ss, rest, version)
+		}
 	}
 }
 
-// flushCached 把命中块按 [start,end] 截取后吐出。
-func flushCached(w http.ResponseWriter, c *cache.Cache, ck cache.CacheKey, start, end, bs int64) {
+// flushCachedBlocks 把已取到的命中块按 [start,end] 截取后吐出。
+func flushCachedBlocks(w http.ResponseWriter, blocks map[int64][]byte, start, end, bs int64) {
 	for off := (start / bs) * bs; off <= end; off += bs {
-		data, _, err := c.Get(ck, off/bs)
-		if err != nil || data == nil {
+		data, ok := blocks[off]
+		if !ok || data == nil {
 			continue
 		}
 		segStart := int64(0)

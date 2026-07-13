@@ -1,6 +1,7 @@
 package config
 
 import (
+	"log"
 	"os"
 	"strconv"
 )
@@ -20,6 +21,7 @@ type Config struct {
 	ProfileMaxAgeSec        int64
 	ListenAddr              string
 	VideoExts               string // 逗号分隔
+	HeadRevalidateSec       int64  // HEAD 一致性校验间隔：同一文件 N 秒内不重复 HEAD
 }
 
 func getenv(key, def string) string {
@@ -34,6 +36,7 @@ func getenvInt(key string, def int64) int64 {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
 			return n
 		}
+		log.Printf("config: invalid int for %s=%q, using default %d", key, v, def)
 	}
 	return def
 }
@@ -43,6 +46,7 @@ func getenvFloat(key string, def float64) float64 {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			return f
 		}
+		log.Printf("config: invalid float for %s=%q, using default %v", key, v, def)
 	}
 	return def
 }
@@ -63,5 +67,6 @@ func Load() Config {
 		ProfileMaxAgeSec:        getenvInt("PROFILE_MAX_AGE_SEC", 6*3600),
 		ListenAddr:              getenv("LISTEN_ADDR", ":8080"),
 		VideoExts:               getenv("VIDEO_EXTS", ".mkv,.mp4,.ts,.avi,.mov,.flv,.m4v"),
+		HeadRevalidateSec:       getenvInt("HEAD_REVALIDATE_SEC", 60),
 	}
 }
